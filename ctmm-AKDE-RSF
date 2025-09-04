@@ -1,0 +1,177 @@
+setwd("C:/Users/kelsey.marshall/OneDrive - ERM/Documents/Background Research/RSF")
+
+
+library(ctmm)
+
+
+##########Import and format data##########
+#The ctmm package requires data to conform to Movebank naming conventions (https://www.movebank.org/node/2381). 
+#Authors recommend uploading data to Movebank (http://www.movebank.org/) as this will facilitate data preparation, 
+#and ensure that your data are correctly formatted for ctmm.If needed, Movebank allows you to keep your data private.
+#data structure calls for headings: "animal ID" or "ID", "timestamp" or "t" (Format: yyyy-MM-dd HH:mm:ss.SSS), 
+#"longitude" or "x" (Format: decimal degrees, WGS84 reference system, can also be UTM), "latitude" or "y"
+
+#for this example, we're using pre-loaded package datasets
+data(buffalo)
+
+#select an individual, examine table headers and data format
+animal1_buff <- buffalo[[4]]
+head(animal1_buff)
+plot(animal1_buff)
+
+##########AKDE##########
+#####Examine autocorrelation structure of the data#####
+
+level <- 0.95 # we want to display 95% confidence intervals
+xlim <- c(0,2 %#% "month") # to create a window of 2 months
+
+SVF <- variogram(animal1_buff)
+par(mfrow = c(1,2))
+plot(SVF, fraction = 1, level = level)
+abline(v = 1, col = "red", lty = 2) # adding a line at 1 month 
+plot(SVF, xlim = xlim, level = level)
+abline(v = 1, col = "red", lty = 2)
+
+# variogram flattens in example at around 1 month time lag, indicating that this 
+# is how coarse the data would need to be to assume independence between points, 
+# and thus when you could use traditional methods (minimum convex polygons (MCPs) and Kernel Density Estimators (KDEs))
+
+#####select movement model that best fits the autocorrelated structure of the data#####
+
+# Calculate an automated model guesstimate:
+GUESS1 <- ctmm.guess(animal1_buff, interactive = FALSE)
+
+# Automated model selection, starting from GUESS:
+FIT1_ML <- ctmm.select(animal1_buff, GUESS1, method = 'ML')
+FIT1_pHREML <- ctmm.select(animal1_buff, GUESS1, method = 'pHREML')
+## reminder: it will default to pHREML if no method is specified.
+#ML = maximum likelihood, pHREML = perturbative Hybrid REML
+
+summary(FIT1_ML)
+summary(FIT1_pHREML)
+# Within these summaries, $name provides the selected best-fit model, 
+# $DOF provides information on the degrees of freedom ($DOF["area"] ~ effective sample size of the home-range area estimate), 
+# and $CI are the parameter outputs (area, position autocorrelation timescale, velocity autocorrelation timescale, and speed).
+
+#By default, model selection is based on Akaike’s Information Criterion adjusted for small sample sizes (AICc). 
+#Typical pool of candidate models includes isotropic (when diffusion is the same in every direction; symmetrical) and 
+#anisotropic (when diffusion varies with direction; asymmetrical) variants. 
+#The automated model selection shows that OUF anisotropic (anisotropic Ornstein-Uhlenbeck foraging process) is our best-fit model. 
+#This movement process features a home range, correlated positions, and correlated velocities. To check the full model selection table, 
+#we can run the following command:
+#FIT1_pHREML_verbose <- ctmm.select(animal1_buff, GUESS1, verbose = TRUE)
+#summary(FIT1_pHREML_verbose)
+
+#####AKDEc#####
+
+# Run an area-corrected AKDE:
+UD1_ML <- akde(animal1_buff, FIT1_ML)
+UD1_pHREML <- akde(animal1_buff, FIT1_pHREML)
+#defaults to area-corrected AKDE, or AKDEc (Fleming & Calabrese 2017)
+#doesn't account for irregular sampling periods
+
+
+#####Evaluate biases in data, and incorporate into model#####
+summary(UD1_pHREML)$CI # home range area estimation
+nrow(animal1_buff) # absolute sample size
+
+#animal1_buffalo had a device malfunction that led GPS fixes to shift from one fix per hour, to one fix every two hours. 
+#As such, this individual is particularly suited for a weighted AKDEc (or wAKDEc), so we can re-run the function with weights set to TRUE:
+UD1w_pHREML <- akde(animal1_buff, FIT1_pHREML, weights = TRUE)
+summary(UD1w_pHREML)$CI # home range area estimation (weighted)
+
+#if effective sample size is really small, you can bootstrap the data to reduce error
+#find code here: https://ecoisilva.github.io/AKDE_minireview/code/AKDE_R-tutorial.html
+
+#####plot results side by side#####
+EXT <- extent(list(UD1_ML, UD1_pHREML, UD1w_pHREML), level = 0.95)
+
+# Plotting pHREML (with and without weights) side-by-side:
+par(mfrow = c(1,2))
+plot(animal1_buff, UD = UD1_pHREML, ext = EXT)
+title(expression("pHREML AKDE"["C"]))
+plot(animal1_buff, UD = UD1w_pHREML, ext = EXT)
+title(expression("pHREML wAKDE"["C"]))
+
+##########RSF##########
+
+# Resource Selection Functions
+# (c) Christen Fleming & Björn Reineking
+
+projection(buffalo) <- median(buffalo)
+#this manipulates the coordinate ref system in data,  "median" returns the ellipsoidal geometric median of a telemetry object
+
+# for the moment rsf.fit only uses isotropic models
+# you can feed in an anisotropic model, but it will be refit
+FITS <- list()
+for(i in 1:length(buffalo))
+{
+  GUESS <- ctmm.guess(buffalo[[i]],CTMM=ctmm(isotropic=TRUE),interactive=FALSE)
+  FITS[[i]] <- ctmm.select(buffalo[[i]],GUESS,trace=3)
+}
+names(FITS) <- names(buffalo)
+save(FITS,file="buffalo-iso.rda")
+load("buffalo-iso.rda")
+
+AKDES <- akde(buffalo,FITS,weights=TRUE)
+#optimal weights on for all of them
+# time to mention the benefits of rsf.fit while this is running
+# * available area is estimated - uncertainty is propagated
+# * available points are randomly sampled until numerical convergence (minimize error rather than specify specific # of available points)
+# * log-likelihood is down-weighted to account for autocorrelation and irregular sampling
+#regular RSF assumes that you have IID data, if you use step selection functions, you have an analogous situation where your turn angles are independent and autocorrelated. 
+#OUF data continuous velocity data is more autocorrelated (30% data come coarse enough to meet the assumption of a regular RSF). 
+
+# load environmental data for buffalo
+load("data/buffalo_env.rda")
+
+# environmental variables
+names(buffalo_env)
+
+# pull out elevation data
+ELEV <- raster(buffalo_env,"elev")
+
+# plot to make sure we have appropriate environmental data & projection
+plot(buffalo,AKDES,R=ELEV,col.grid=NA,col.level=NA)
+
+help("rsf.fit")
+# raster covariates must be in a named list
+
+# special ingredients in rsf.fit
+# 1.) weighted likelihood to adjust for temporal autocorrelation and sampling irregularity
+i <- 4
+plot(buffalo[[i]]$timestamp,AKDES[[i]]$weights * AKDES[[i]]$DOF.area[1],xlab="time",ylab="weight")
+# 2.) estimate available area (slides)
+# 3.) sample available points until numerical convergence of the Monte-Carlo integral
+TEST <- rsf.fit(buffalo[[i]],AKDES[[i]],R=list(elevation=ELEV))
+# 4.) a better numerical integrator than Monte-Carlo integration (below)
+#once running, it will randomly sample points until the Poisson model is accurate and converge
+
+RSF <- list()
+for(i in 1:length(buffalo))
+{
+  RSF[[i]] <- rsf.fit(buffalo[[i]],AKDES[[i]],R=list(elevation=ELEV),integrator="Riemann",trace=2)
+}
+
+
+names(RSF) <- names(buffalo)
+
+# inspect one model fit
+i <- 4
+summary(RSF[[i]]) # borderline significant
+# the rest are insignificant
+
+# if you had more individuals and more significance
+help("mean.ctmm")
+IID <- ctmm.fit(buffalo [1] , ctmm(isotropic=TRUE))
+KDE <- akde(buffalo [1], IID)
+RSF.IID <- rsf.fit(buffalo [1]), KDE.R-list(elevation= ELEV)
+summary(RSF.IID)
+# suitability maps
+help("suitability")
+
+# RSF-informed AKDE
+i <- 1
+RAKDE <- akde(buffalo[[i]],RSF[[i]],R=list(elevation=ELEV),weights=TRUE)
+
+plot(buffalo[[i]],RAKDE)
