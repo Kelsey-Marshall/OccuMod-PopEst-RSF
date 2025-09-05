@@ -57,7 +57,7 @@ Sardinecompile$Pit <- gsub("\n", "",Sardinecompile$Pit)
 ###output compiled data in new excel file, this is the file I am going to QC (in excel)
 ### with code below and read in again as needed as I correct errors
 #write.xlsx(Sardinecompile, "Sardine16_24.xlsx")
-
+# change to script!!!!!
 
 #####3 read in your mark recap data#####
 
